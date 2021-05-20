@@ -27,7 +27,7 @@
 #include <unistd.h>
 
 
-#define CHANDLER_LOG_MESSAGE_SIZE   512
+#define CHANDLER_LOG_MESSAGE_SIZE   65536
 
 /* Logger level identifiers */
 #define CHANDLER_LOG_LEVEL_NIL_ID   0
