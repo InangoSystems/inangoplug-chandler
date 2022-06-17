@@ -46,16 +46,54 @@ static char rpc_request_monitor[] = "{\"id\":0,\"method\":\"monitor\",\"params\"
  * }
  */
 
+static int check_for_connected(const char * json, jsmntok_t * t, int count, const char * key, const char * value)
+{
+    jsmntok_t * t_row = t + 1;  /* token related to object of table's fields */
+    int         count_row;      /* number of tokens comprising the t_row */
+
+    /*
+    This module receives JSON from ovsdb-server. Sometimes there is only "{"old":{"is_connected":true}}" part
+    without "{"new":{"is_connected":false}}" part. We consider such a JSON as disconnection also.
+    */
+    if (!is_json_token_equal_to_str(json, t, key))
+        return 0;
+
+    if(t->size == 1 && t_row->type == JSMN_OBJECT) {
+        count_row = json_next_index(t_row, count, 0);
+
+        for (int j = 1; j < count_row; j = json_next_index(t_row, count - (j + 1), j + 1)) {
+            /* (t_row + j) - token of the key */
+            /* (t_row + j + 1) - token of the value */
+            if (is_json_token_equal_to_str(json, t_row + j, "is_connected")) {
+
+                if (is_json_token_equal_to_primitive(json, t_row + j + 1, value)) {
+                    LOG_DBG("found %s tables::controller::is_connected == %s", key, value);
+                    return 1;  /* first located is enough */
+                }
+
+                break;  /* lets look for the next row */
+            }
+        }
+    }
+
+    return 0;
+}
+
 void handle_controller_changes(ovsdb_monitor_t * monitor, jsmntok_t * t, int count)
 {
     const char *json = monitor->buffer;
-    jsmntok_t  *t_row;
-    int         count_row;
     int         upper_bound = json_next_index(t, count, 0);
+
+    if(monitor->on_disconnect == NULL)
+        return;
 
     /* sample of JSON part, which should be referenced by token t
      * {
      *    "afc1a2e8-e999-49df-ab4e-943b3a2cdaf0":{"new":{"is_connected":false}},
+     *    "b85f9c78-438a-4b6d-9492-3dd907f3897c":{"old":{"is_connected":true}}
+     * }
+     * sometimes it may be a JSON part like this:
+     * {
      *    "b85f9c78-438a-4b6d-9492-3dd907f3897c":{"old":{"is_connected":true}}
      * }
      */
@@ -75,31 +113,11 @@ void handle_controller_changes(ovsdb_monitor_t * monitor, jsmntok_t * t, int cou
 
         /* i + 1 = index of first key which should be "new" or "old" */
         /* i + 2 = index of value related to key - should be object of table field names as keys and string values */
-        if (   is_json_token_equal_to_str(json, &t[i + 1], "new")
-            && t[i + 1].size == 1
-            && t[i + 2].type == JSMN_OBJECT
-        )
-        {
-            t_row     = t + i + 2;                                   /* token related to object of table's fields */
-            count_row = json_next_index(t_row, count - (i + 2), 0);  /* number of tokens comprising the t_row */
-
-            for (int j = 1; j < count_row; j = json_next_index(t_row, (count - (i + 2)) - (j + 1), j + 1)) {
-                /* (t_row + j) - token of the key */
-                /* (t_row + j + 1) - token of the value */
-                if (is_json_token_equal_to_str(json, t_row + j, "is_connected")) {
-
-                    if (is_json_token_equal_to_primitive(json, t_row + j + 1, "false")) {
-                        LOG_DBG("found tables::controller::is_connected == false");
-                        if (monitor->on_disconnect != NULL) {
-                            monitor->on_disconnect();
-                        }
-
-                        return;  /* first located is enough */
-                    }
-
-                    break;  /* lets look for the next row */
-                }
-            }
+        if (check_for_connected(json, &t[i + 1], count - i - 2, "new", "false") 
+            || check_for_connected(json, &t[i + 1], count - i - 2, "old", "true")
+        ) {
+            monitor->on_disconnect();
+            return;
         }
     }
 }
